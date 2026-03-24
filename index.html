@@ -231,12 +231,17 @@
                         window._syncing = false; return;
                     }
 
-                    const ctrl = new AbortController(); const timeoutId = setTimeout(() => ctrl.abort(), 10000);
-                    const response = await fetch('https://sua-api.com/v1/sync', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ empresa_id: State.empresa_id, ...pendentes }), signal: ctrl.signal
-                    });
-                    clearTimeout(timeoutId);
+                   const ctrl = new AbortController(); 
+const timeoutId = setTimeout(() => ctrl.abort(), 15000); // Aumentei para 15s para dar tempo do Neon "acordar"
+
+const response = await fetch('/api/sync', { // <--- Mudança cirúrgica aqui
+    method: 'POST', 
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ empresa_id: State.empresa_id, dados: pendentes }), 
+    signal: ctrl.signal
+});
+
+clearTimeout(timeoutId);
 
                     if (response.ok) {
                         for (const store in pendentes) {
