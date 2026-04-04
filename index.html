@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UMX Gestão v4.0 | Enterprise PDV & ERP</title>
+    <title>UMX Gestão v4.1 | Enterprise PDV + NFe Import</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#1e293b">
     
@@ -20,7 +20,6 @@
         body { font-family: 'Inter', sans-serif; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         #sidebar { transition: width 0.3s ease, transform 0.3s ease; }
-        /* FASE 12: IMPRESSÃO TÉRMICA */
         @media print {
             body * { visibility: hidden; }
             #print-area, #print-area * { visibility: visible; }
@@ -74,7 +73,7 @@
 
     <script>
         /**
-         * UMX GESTÃO v4.0 - ERP + PDV OFFLINE SaaS
+         * UMX GESTÃO v4.1 - ERP + PDV + XML IMPORT + CREDIÁRIO
          */
         
         const State = { 
@@ -82,10 +81,8 @@
             config: null, chartInstance: null,
             empresa_id: localStorage.getItem('umx_empresa_id') || "999",
             lastSync: null,
-            // FASE 8 e 9: ESTADO DE PAGINAÇÃO E BUSCA
             search: { clientes: '', produtos: '', os: '' },
             page: { clientes: 1, produtos: 1, os: 1 },
-            // FASE 11: ESTADO DO PDV
             pdvCart: []
         };
 
@@ -96,27 +93,18 @@
             sync_status: 0
         });
 
-        // FASE 2: MELHORIAS NO INDEXEDDB
         const DB = {
-            name: "UMX_Gestao_v3", version: 2, handle: null, // Versão incrementada
+            name: "UMX_Gestao_v3", version: 2, handle: null,
             async init() {
                 return new Promise((resolve, reject) => {
                     const req = indexedDB.open(this.name, this.version);
-                    
                     req.onupgradeneeded = (e) => {
                         const db = e.target.result;
-                        
-                        // Criação das stores básicas
                         const stores = ["clientes", "produtos", "servicos", "os", "transacoes"];
-                        stores.forEach(s => {
-                            if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: "id", autoIncrement: true });
-                        });
+                        stores.forEach(s => { if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: "id", autoIncrement: true }); });
                         if (!db.objectStoreNames.contains("config")) db.createObjectStore("config", { keyPath: "key" });
-                        
-                        // FASE 14: Store do Caixa
                         if (!db.objectStoreNames.contains("caixa")) db.createObjectStore("caixa", { keyPath: "id", autoIncrement: true });
 
-                        // Criação de Índices seguros
                         try { db.objectStore("clientes").createIndex("by_cpf", "cpfCnpj", { unique: false }); } catch(e){}
                         try { db.objectStore("produtos").createIndex("by_codigo", "codigo", { unique: false }); } catch(e){}
                         try { db.objectStore("produtos").createIndex("by_nome", "nome", { unique: false }); } catch(e){}
@@ -124,56 +112,33 @@
                         try { db.objectStore("os").createIndex("by_cliente", "clienteId", { unique: false }); } catch(e){}
                         try { db.objectStore("transacoes").createIndex("by_data", "data", { unique: false }); } catch(e){}
                     };
-
                     req.onsuccess = (e) => { this.handle = e.target.result; resolve(true); };
                     req.onerror = () => reject("Erro DB");
                 });
             },
-            async getAll(storeName) {
-                return new Promise(r => {
-                    const tx = this.handle.transaction(storeName, "readonly");
-                    tx.objectStore(storeName).getAll().onsuccess = e => r(e.target.result);
-                });
-            },
-            async get(storeName, key) {
-                return new Promise(r => {
-                    const tx = this.handle.transaction(storeName, "readonly");
-                    tx.objectStore(storeName).get(key).onsuccess = e => r(e.target.result);
-                });
-            },
-            async put(storeName, data) {
-                const tx = this.handle.transaction(storeName, "readwrite");
-                return new Promise(r => tx.objectStore(storeName).put(data).onsuccess = () => r(true));
-            },
-            async delete(storeName, key) {
-                const tx = this.handle.transaction(storeName, "readwrite");
-                return new Promise(r => tx.objectStore(storeName).delete(key).onsuccess = () => r(true));
-            },
+            async getAll(storeName) { return new Promise(r => { this.handle.transaction(storeName, "readonly").objectStore(storeName).getAll().onsuccess = e => r(e.target.result); }); },
+            async get(storeName, key) { return new Promise(r => { this.handle.transaction(storeName, "readonly").objectStore(storeName).get(key).onsuccess = e => r(e.target.result); }); },
+            async put(storeName, data) { return new Promise(r => { this.handle.transaction(storeName, "readwrite").objectStore(storeName).put(data).onsuccess = () => r(true); }); },
+            async delete(storeName, key) { return new Promise(r => { this.handle.transaction(storeName, "readwrite").objectStore(storeName).delete(key).onsuccess = () => r(true); }); },
             async exportDatabase() {
                 const backup = {};
-                const stores = ["clientes", "produtos", "servicos", "os", "transacoes", "config", "caixa"];
-                for (const store of stores) backup[store] = await this.getAll(store);
+                for (const store of ["clientes", "produtos", "servicos", "os", "transacoes", "config", "caixa"]) backup[store] = await this.getAll(store);
                 const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a"); a.href = url; a.download = `backup_umx_${Date.now()}.json`; a.click();
             },
-            // FASE 5: IMPORTAÇÃO DE BACKUP
             async importDatabase(fileContent) {
                 try {
                     const data = JSON.parse(fileContent);
                     for (const storeName in data) {
                         if (this.handle.objectStoreNames.contains(storeName)) {
-                            const tx = this.handle.transaction(storeName, "readwrite");
-                            const store = tx.objectStore(storeName);
-                            store.clear();
-                            data[storeName].forEach(item => store.put(item));
+                            const store = this.handle.transaction(storeName, "readwrite").objectStore(storeName);
+                            store.clear(); data[storeName].forEach(item => store.put(item));
                         }
                     }
                     UI.toast("Backup Restaurado! O sistema será reiniciado.");
                     setTimeout(() => location.reload(), 2000);
-                } catch (e) {
-                    UI.toast("Erro ao ler arquivo de backup.", "error");
-                }
+                } catch (e) { UI.toast("Erro ao ler arquivo de backup.", "error"); }
             }
         };
 
@@ -187,10 +152,8 @@
                 State.caixa = await DB.getAll("caixa");
                 State.config = await DB.get("config", "app_license");
             },
-
             async finalizeOS(osId) {
-                if (window._processingOS) return;
-                window._processingOS = true;
+                if (window._processingOS) return; window._processingOS = true;
                 try {
                     const os = await DB.get("os", osId);
                     if (!os || os.status === 'Finalizada') throw "Operação inválida.";
@@ -199,10 +162,9 @@
                     for (const item of (os.itensProdutos || [])) {
                         const product = await new Promise(r => tx.objectStore("produtos").get(item.id).onsuccess = e => r(e.target.result));
                         if (product.estoqueAtual < item.qtd) throw `Estoque insuficiente: ${item.nome}`;
-                        product.estoqueAtual -= item.qtd;
-                        tx.objectStore("produtos").put(product);
+                        product.estoqueAtual -= item.qtd; tx.objectStore("produtos").put(product);
                     }
-                    tx.objectStore("transacoes").add(syncMetadata({ tipo: 'entrada', origem: 'OS', osId: os.id, descricao: `Receb OS #${os.id}`, valor: os.total, data: Date.now() }));
+                    tx.objectStore("transacoes").add(syncMetadata({ tipo: 'entrada', origem: 'OS', osId: os.id, descricao: `Receb OS #${os.id}`, valor: os.total, data: Date.now(), status: 'pago' }));
                     
                     os.status = 'Finalizada'; os.dataFechamento = Date.now(); os.sync_status = 0;
                     tx.objectStore("os").put(syncMetadata(os));
@@ -210,10 +172,8 @@
                     return new Promise((r, j) => { tx.oncomplete = () => r(true); tx.onerror = () => j("Erro na transação."); });
                 } catch (err) { throw err; } finally { window._processingOS = false; }
             },
-
             async syncData() {
-                if (window._syncing || !navigator.onLine) return;
-                window._syncing = true;
+                if (window._syncing || !navigator.onLine) return; window._syncing = true;
                 const ind = document.getElementById('sync-indicator');
                 ind.innerText = "SINCRONIZANDO..."; ind.className = "text-[10px] font-bold text-blue-500 animate-pulse";
 
@@ -231,17 +191,12 @@
                         window._syncing = false; return;
                     }
 
-                   const ctrl = new AbortController(); 
-const timeoutId = setTimeout(() => ctrl.abort(), 15000); // Aumentei para 15s para dar tempo do Neon "acordar"
-
-const response = await fetch('/api/sync', { // <--- Mudança cirúrgica aqui
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ empresa_id: State.empresa_id, dados: pendentes }), 
-    signal: ctrl.signal
-});
-
-clearTimeout(timeoutId);
+                    const ctrl = new AbortController(); const timeoutId = setTimeout(() => ctrl.abort(), 10000);
+                    const response = await fetch('https://sua-api.com/v1/sync', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ empresa_id: State.empresa_id, ...pendentes }), signal: ctrl.signal
+                    });
+                    clearTimeout(timeoutId);
 
                     if (response.ok) {
                         for (const store in pendentes) {
@@ -258,26 +213,20 @@ clearTimeout(timeoutId);
         const UI = {
             async init() {
                 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(e=>{});
-                
                 await DB.init();
                 await Service.loadAllState();
-                
-                // FASE 10: SALVAR ESTADO DA INTERFACE
                 if (localStorage.theme === 'dark') document.documentElement.classList.add('dark');
                 const lastTab = localStorage.getItem('umx_last_tab') || 'dashboard';
                 this.nav(lastTab);
                 
-                // Checagem de Estoque
                 State.produtos.forEach(p => { if (p.estoqueAtual < (p.estoqueMinimo || 5)) this.toast(`Estoque baixo: ${p.nome}`, "error"); });
-
                 setInterval(() => Service.syncData(), 60000);
             },
             nav(view) {
                 if (State.chartInstance) { State.chartInstance.destroy(); State.chartInstance = null; }
                 document.getElementById('page-title').innerText = view.toUpperCase();
                 document.getElementById('viewport').innerHTML = this.views[view] ? this.views[view]() : '';
-                
-                localStorage.setItem('umx_last_tab', view); // Persiste a aba
+                localStorage.setItem('umx_last_tab', view);
 
                 if (view === 'dashboard') this.renderDashChart();
                 if (view === 'clientes' || view === 'produtos' || view === 'os') UI.renderTable(view);
@@ -299,75 +248,42 @@ clearTimeout(timeoutId);
                 sb.classList.toggle('-translate-x-full', !open);
             },
             closeModal() { document.getElementById('modal-container').classList.add('hidden'); },
-            
-            // FASE 7: DASHBOARD COM DADOS REAIS
             renderDashChart() {
                 const ctx = document.getElementById('chartDashboard');
                 if (!ctx) return;
-                
-                // Agrupar vendas dos últimos 7 dias
-                const ultimos7Dias = [...Array(7)].map((_, i) => {
-                    const d = new Date(); d.setDate(d.getDate() - i);
-                    return d.toLocaleDateString();
-                }).reverse();
-
-                const dadosVendas = ultimos7Dias.map(dataLabel => {
-                    return State.transacoes.filter(t => t.tipo === 'entrada' && new Date(t.data).toLocaleDateString() === dataLabel)
-                                           .reduce((sum, t) => sum + t.valor, 0);
-                });
-
-                State.chartInstance = new Chart(ctx, { 
-                    type: 'bar', 
-                    data: { labels: ultimos7Dias, datasets: [{ label: 'Faturamento (R$)', data: dadosVendas, backgroundColor: '#2563eb', borderRadius: 4 }] }, 
-                    options: { maintainAspectRatio: false } 
-                });
+                const ultimos7Dias = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - i); return d.toLocaleDateString(); }).reverse();
+                const dadosVendas = ultimos7Dias.map(dataLabel => State.transacoes.filter(t => t.tipo === 'entrada' && new Date(t.data).toLocaleDateString() === dataLabel).reduce((sum, t) => sum + t.valor, 0));
+                State.chartInstance = new Chart(ctx, { type: 'bar', data: { labels: ultimos7Dias, datasets: [{ label: 'Faturamento (R$)', data: dadosVendas, backgroundColor: '#2563eb', borderRadius: 4 }] }, options: { maintainAspectRatio: false } });
             },
-
-            // FASE 8 e 9: RENDERIZADOR DE TABELAS PAGINADAS COM BUSCA
             renderTable(type) {
                 const container = document.getElementById(`list-${type}`);
                 if (!container) return;
-                
                 let data = State[type];
                 const term = State.search[type].toLowerCase();
+                if (term) data = data.filter(item => JSON.stringify(item).toLowerCase().includes(term));
                 
-                if (term) {
-                    data = data.filter(item => JSON.stringify(item).toLowerCase().includes(term));
-                }
-
-                const limit = 50;
-                const totalPages = Math.ceil(data.length / limit) || 1;
+                const limit = 50; const totalPages = Math.ceil(data.length / limit) || 1;
                 if (State.page[type] > totalPages) State.page[type] = totalPages;
-                
                 const start = (State.page[type] - 1) * limit;
                 const paginatedData = data.slice(start, start + limit);
 
                 let html = "";
-                if (paginatedData.length === 0) {
-                    html = `<tr><td colspan="5" class="p-10 text-center opacity-50">Nenhum registro encontrado.</td></tr>`;
-                } else {
-                    if (type === 'clientes') {
-                        html = paginatedData.map(c => `<tr><td class="p-4 font-bold">${c.nome}</td><td class="p-4">${c.cpfCnpj}</td><td class="p-4 text-right"><button onclick="Actions.deleteItem('clientes',${c.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
-                    } else if (type === 'produtos') {
-                        html = paginatedData.map(p => `<tr><td class="p-4 font-bold">${p.nome}</td><td class="p-4 opacity-50">${p.codigo||'--'}</td><td class="p-4 ${p.estoqueAtual < (p.estoqueMinimo||5) ? 'text-red-500 font-bold' : ''}">${p.estoqueAtual}</td><td class="p-4">R$ ${p.precoVenda.toFixed(2)}</td><td class="p-4 text-right"><button onclick="Actions.deleteItem('produtos',${p.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
-                    } else if (type === 'os') {
-                        html = paginatedData.map(o => `<tr><td class="px-6 py-4 font-bold">#${o.id}</td><td class="px-6 py-4">${State.clientes.find(c=>c.id==o.clienteId)?.nome || '--'}</td><td class="px-6 py-4"><span class="px-2 py-1 rounded-full text-[10px] font-bold ${o.status=='Finalizada'?'bg-green-100 text-green-700':'bg-orange-100 text-orange-700'}">${o.status}</span></td><td class="px-6 py-4 text-right flex justify-end gap-2">${o.status=='Aberta'?`<button onclick="Actions.finalizeOS(${o.id})" class="text-green-500">✅</button>`:''}<button onclick="Actions.printOS(${o.id})">🖨️</button><button onclick="Actions.deleteItem('os',${o.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
-                    }
+                if (paginatedData.length === 0) html = `<tr><td colspan="5" class="p-10 text-center opacity-50">Nenhum registro encontrado.</td></tr>`;
+                else {
+                    if (type === 'clientes') html = paginatedData.map(c => `<tr><td class="p-4 font-bold">${c.nome}</td><td class="p-4">${c.cpfCnpj}</td><td class="p-4 text-right"><button onclick="Actions.deleteItem('clientes',${c.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
+                    else if (type === 'produtos') html = paginatedData.map(p => `<tr><td class="p-4 font-bold">${p.nome}</td><td class="p-4 opacity-50">${p.codigo||'--'}</td><td class="p-4 ${p.estoqueAtual < (p.estoqueMinimo||5) ? 'text-red-500 font-bold' : ''}">${p.estoqueAtual}</td><td class="p-4">R$ ${p.precoVenda.toFixed(2)}</td><td class="p-4 text-right"><button onclick="Actions.deleteItem('produtos',${p.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
+                    else if (type === 'os') html = paginatedData.map(o => `<tr><td class="px-6 py-4 font-bold">#${o.id}</td><td class="px-6 py-4">${State.clientes.find(c=>c.id==o.clienteId)?.nome || '--'}</td><td class="px-6 py-4"><span class="px-2 py-1 rounded-full text-[10px] font-bold ${o.status=='Finalizada'?'bg-green-100 text-green-700':'bg-orange-100 text-orange-700'}">${o.status}</span></td><td class="px-6 py-4 text-right flex justify-end gap-2">${o.status=='Aberta'?`<button onclick="Actions.finalizeOS(${o.id})" class="text-green-500">✅</button>`:''}<button onclick="Actions.printOS(${o.id})">🖨️</button><button onclick="Actions.deleteItem('os',${o.id})" class="text-red-400">🗑️</button></td></tr>`).join('');
                 }
-
                 container.innerHTML = html;
-                
-                // Update Pagination UI
                 const pInfo = document.getElementById(`page-info-${type}`);
                 if (pInfo) pInfo.innerText = `Pág ${State.page[type]} de ${totalPages} (Total: ${data.length})`;
             },
-
             views: {
                 dashboard: () => {
-                    const fatMensal = State.transacoes.filter(t => t.tipo === 'entrada' && new Date(t.data).getMonth() === new Date().getMonth()).reduce((a,c) => a+c.valor, 0);
+                    const fatMensal = State.transacoes.filter(t => t.tipo === 'entrada' && t.status !== 'pendente' && new Date(t.data).getMonth() === new Date().getMonth()).reduce((a,c) => a+c.valor, 0);
                     return `
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                        <div class="bg-white dark:bg-darkCard p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800"><p class="text-slate-500 text-xs font-bold uppercase">Faturamento Mensal</p><h3 class="text-2xl font-bold mt-2 text-blue-600">R$ ${fatMensal.toFixed(2)}</h3></div>
+                        <div class="bg-white dark:bg-darkCard p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800"><p class="text-slate-500 text-xs font-bold uppercase">Faturamento (Mês)</p><h3 class="text-2xl font-bold mt-2 text-blue-600">R$ ${fatMensal.toFixed(2)}</h3></div>
                         <div class="bg-white dark:bg-darkCard p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800"><p class="text-slate-500 text-xs font-bold uppercase">OS Abertas</p><h3 class="text-2xl font-bold mt-2 text-orange-500">${State.os.filter(o => o.status === 'Aberta').length}</h3></div>
                         <div class="bg-white dark:bg-darkCard p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800"><p class="text-slate-500 text-xs font-bold uppercase">Total Clientes</p><h3 class="text-2xl font-bold mt-2">${State.clientes.length}</h3></div>
                     </div>
@@ -377,35 +293,66 @@ clearTimeout(timeoutId);
                     <div class="flex flex-col md:flex-row justify-between mb-6 gap-4"> 
                         <h2 class="text-2xl font-bold">Clientes</h2> 
                         <div class="flex gap-2">
-                            <input type="text" placeholder="Buscar cliente..." onkeyup="Actions.search('clientes', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64">
+                            <input type="text" placeholder="Buscar cliente..." onkeyup="Actions.search('clientes', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64 outline-none">
                             <button onclick="Actions.openForm('cliente')" class="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold">+ Novo</button>
                         </div>
                     </div>
                     <div class="bg-white dark:bg-darkCard rounded-3xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800"><table class="w-full text-left"><thead class="bg-slate-50 dark:bg-slate-800/50 text-xs uppercase font-bold text-slate-500"><tr><th class="p-4">Nome</th><th class="p-4">CPF/CNPJ</th><th class="p-4 text-right">Ação</th></tr></thead><tbody id="list-clientes" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody></table>
                     <div class="p-4 flex justify-between bg-slate-50 dark:bg-slate-800/50 items-center"><button onclick="Actions.changePage('clientes', -1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Anterior</button><span id="page-info-clientes" class="text-sm font-bold text-slate-500"></span><button onclick="Actions.changePage('clientes', 1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Próximo</button></div></div>`,
+                
+                // CIRURGIA: Importação de XML inserida na tela de produtos
                 produtos: () => `
                     <div class="flex flex-col md:flex-row justify-between mb-6 gap-4"> 
                         <h2 class="text-2xl font-bold">Produtos</h2> 
                         <div class="flex gap-2">
-                            <input type="text" placeholder="Buscar por nome ou cód..." onkeyup="Actions.search('produtos', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64">
+                            <input type="text" placeholder="Buscar produto..." onkeyup="Actions.search('produtos', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64 outline-none">
+                            <input type="file" id="import-xml-input" class="hidden" accept=".xml" onchange="Actions.importarXML(event)">
+                            <button onclick="document.getElementById('import-xml-input').click()" class="bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white px-4 py-3 rounded-xl font-bold hover:bg-slate-300 transition" title="Importar NFe XML">📄 Importar XML</button>
                             <button onclick="Actions.openForm('produto')" class="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold">+ Novo</button>
                         </div>
                     </div>
                     <div class="bg-white dark:bg-darkCard rounded-3xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800"><table class="w-full text-left"><thead class="bg-slate-50 dark:bg-slate-800/50 text-xs uppercase font-bold text-slate-500"><tr><th class="p-4">Descrição</th><th class="p-4">Código</th><th class="p-4">Estoque</th><th class="p-4">Preço</th><th class="p-4 text-right">Ação</th></tr></thead><tbody id="list-produtos" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody></table>
                     <div class="p-4 flex justify-between bg-slate-50 dark:bg-slate-800/50 items-center"><button onclick="Actions.changePage('produtos', -1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Anterior</button><span id="page-info-produtos" class="text-sm font-bold text-slate-500"></span><button onclick="Actions.changePage('produtos', 1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Próximo</button></div></div>`,
+                
                 os: () => `
                     <div class="flex flex-col md:flex-row justify-between mb-6 gap-4"> 
                         <h2 class="text-2xl font-bold">Ordens de Serviço</h2> 
                         <div class="flex gap-2">
-                            <input type="text" placeholder="Buscar OS..." onkeyup="Actions.search('os', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64">
+                            <input type="text" placeholder="Buscar OS..." onkeyup="Actions.search('os', this.value)" class="p-3 rounded-xl bg-white dark:bg-darkCard border border-slate-200 dark:border-slate-800 w-64 outline-none">
                             <button onclick="Actions.openForm('os')" class="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold">+ Nova OS</button>
                         </div>
                     </div>
                     <div class="bg-white dark:bg-darkCard rounded-3xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800"><table class="w-full text-left"><thead class="bg-slate-50 dark:bg-slate-800/50 text-xs uppercase font-bold text-slate-500"><tr><th class="p-4">Nº OS</th><th class="p-4">Cliente</th><th class="p-4">Status</th><th class="p-4 text-right">Ação</th></tr></thead><tbody id="list-os" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody></table>
                     <div class="p-4 flex justify-between bg-slate-50 dark:bg-slate-800/50 items-center"><button onclick="Actions.changePage('os', -1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Anterior</button><span id="page-info-os" class="text-sm font-bold text-slate-500"></span><button onclick="Actions.changePage('os', 1)" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg">Próximo</button></div></div>`,
-                financeiro: () => `
-                    <div class="bg-white dark:bg-darkCard rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-6"><h2 class="text-xl font-bold mb-4">Lançamentos Financeiros</h2>
-                    <div class="space-y-2">${State.transacoes.map(t=>`<div class="flex justify-between p-3 border-b dark:border-slate-800"><span>${t.descricao}</span><span class="font-bold ${t.tipo=='entrada'?'text-green-500':'text-red-500'}">R$ ${t.valor.toFixed(2)}</span></div>`).join('') || '<p class="opacity-50 text-center py-4">Nenhum lançamento.</p>'}</div></div>`,
+                
+                // CIRURGIA: Financeiro com aba de Crediário (A Receber)
+                financeiro: () => {
+                    const pagos = State.transacoes.filter(t => t.status !== 'pendente');
+                    const pendentes = State.transacoes.filter(t => t.status === 'pendente');
+                    return `
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-white dark:bg-darkCard rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-6">
+                            <h2 class="text-xl font-bold mb-4 text-green-600">📥 Receitas Confirmadas</h2>
+                            <div class="space-y-2 h-96 overflow-y-auto pr-2 no-scrollbar">
+                                ${pagos.map(t=>`<div class="flex justify-between p-3 border-b dark:border-slate-800 text-sm"><span>${t.descricao}</span><span class="font-bold ${t.tipo=='entrada'?'text-green-500':'text-red-500'}">R$ ${t.valor.toFixed(2)}</span></div>`).join('') || '<p class="opacity-50 text-center py-4">Nenhum lançamento.</p>'}
+                            </div>
+                        </div>
+                        <div class="bg-white dark:bg-darkCard rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-6">
+                            <h2 class="text-xl font-bold mb-4 text-orange-500">⏳ Contas a Receber (Fiado)</h2>
+                            <div class="space-y-2 h-96 overflow-y-auto pr-2 no-scrollbar">
+                                ${pendentes.map(t=>`
+                                    <div class="flex justify-between items-center p-3 border-b dark:border-slate-800 bg-orange-50 dark:bg-orange-900/10 rounded-xl mb-2">
+                                        <div class="flex flex-col"><span class="font-bold text-sm">${t.descricao}</span><span class="text-xs opacity-60">${new Date(t.data).toLocaleDateString()}</span></div>
+                                        <div class="flex items-center gap-3">
+                                            <span class="font-bold text-orange-500">R$ ${t.valor.toFixed(2)}</span>
+                                            <button onclick="Actions.receberFiado(${t.id})" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded-lg text-xs font-bold transition">Receber</button>
+                                        </div>
+                                    </div>
+                                `).join('') || '<p class="opacity-50 text-center py-4">Tudo recebido!</p>'}
+                            </div>
+                        </div>
+                    </div>`;
+                },
                 config: () => `
                     <div class="bg-white dark:bg-darkCard p-8 rounded-3xl border border-slate-200 dark:border-slate-800">
                         <h2 class="text-xl font-bold mb-4">Configurações do Sistema</h2>
@@ -422,11 +369,16 @@ clearTimeout(timeoutId);
                             </div>
                         </div>
                     </div>`,
-                // FASE 11: NOVA TELA PDV
+                
+                // CIRURGIA: Inserção do seletor de Cliente na tela do PDV
                 pdv: () => `
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
                         <div class="lg:col-span-2 bg-white dark:bg-darkCard rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 flex flex-col">
                             <h2 class="text-2xl font-bold mb-4">🛒 Frente de Caixa</h2>
+                            <select id="pdv-client" class="w-full p-4 text-sm bg-slate-50 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 mb-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option value="">Cliente Padrão (Consumidor)</option>
+                                ${State.clientes.map(c => `<option value="${c.id}">${c.nome}</option>`).join('')}
+                            </select>
                             <input type="text" id="pdv-search" placeholder="Busque por código, barras ou nome (ENTER para add)..." onkeydown="Actions.pdvSearch(event)" class="w-full p-4 text-lg bg-slate-50 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 mb-4 focus:ring-2 focus:ring-blue-500 outline-none">
                             <div class="flex-1 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded-xl p-2 bg-slate-50 dark:bg-slate-900/50">
                                 <table class="w-full text-left">
@@ -445,16 +397,15 @@ clearTimeout(timeoutId);
                                 <label class="text-sm font-bold opacity-60 uppercase">Pagamento</label>
                                 <select id="pdv-pag" class="w-full p-4 bg-slate-100 dark:bg-slate-900 rounded-xl border-none outline-none mt-2 font-bold">
                                     <option value="dinheiro">Dinheiro</option><option value="pix">PIX</option><option value="cartao">Cartão</option>
+                                    <option value="crediario">Crediário (Fiado)</option>
                                 </select>
                             </div>
                             <button onclick="Actions.pdvFinalize()" class="w-full bg-green-500 hover:bg-green-600 text-white p-5 rounded-2xl font-black text-xl mt-6 shadow-lg shadow-green-500/30 transition active:scale-95">FINALIZAR VENDA</button>
                         </div>
                     </div>`,
-                // FASE 13: TELA DE CAIXA
                 caixa: () => {
                     const last = State.caixa.length > 0 ? State.caixa[State.caixa.length - 1] : null;
                     const isOpen = last && !last.dataFechamento;
-                    
                     if (isOpen) {
                         return `
                         <div class="max-w-xl mx-auto bg-white dark:bg-darkCard p-8 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 text-center">
@@ -473,37 +424,27 @@ clearTimeout(timeoutId);
                             <div class="w-20 h-20 bg-slate-100 dark:bg-slate-800 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl">🔒</div>
                             <h2 class="text-2xl font-black mb-6 opacity-50">CAIXA FECHADO</h2>
                             <div class="text-left space-y-4 mb-8">
-                                <div><label class="text-xs font-bold uppercase opacity-50">Fundo de Troco Inicial (R$)</label><input id="cx-valor" type="number" value="0" class="w-full p-4 bg-slate-50 dark:bg-slate-900 rounded-xl outline-none mt-1"></div>
-                                <div><label class="text-xs font-bold uppercase opacity-50">Nome do Operador</label><input id="cx-op" type="text" value="Admin" class="w-full p-4 bg-slate-50 dark:bg-slate-900 rounded-xl outline-none mt-1"></div>
+                                <div><label class="text-xs font-bold uppercase opacity-50">Fundo Troco (R$)</label><input id="cx-valor" type="number" value="0" class="w-full p-4 bg-slate-50 dark:bg-slate-900 rounded-xl outline-none mt-1"></div>
+                                <div><label class="text-xs font-bold uppercase opacity-50">Operador</label><input id="cx-op" type="text" value="Admin" class="w-full p-4 bg-slate-50 dark:bg-slate-900 rounded-xl outline-none mt-1"></div>
                             </div>
                             <button onclick="Actions.abrirCaixa()" class="w-full bg-blue-600 text-white p-4 rounded-2xl font-black">ABRIR CAIXA</button>
                         </div>`;
                     }
                 },
-                servicos: () => `<div class="p-10 text-center opacity-50">Módulo Serviços - Implementação similar a produtos</div>` // Simplificado para espaço
+                servicos: () => `<div class="p-10 text-center opacity-50">Módulo Serviços.</div>`
             }
         };
 
         const Actions = {
-            // FASE 8 e 9: Handlers de Paginação e Busca
             search(type, term) { State.search[type] = term; State.page[type] = 1; UI.renderTable(type); },
             changePage(type, direction) { State.page[type] += direction; if (State.page[type] < 1) State.page[type] = 1; UI.renderTable(type); },
-
-            // FASE 5: Backup Handler
             importJSON(e) {
-                const file = e.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (event) => DB.importDatabase(event.target.result);
-                reader.readAsText(file);
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader(); reader.onload = (ev) => DB.importDatabase(ev.target.result); reader.readAsText(file);
             },
-
-            // FASE 6: Licença (Check simples Base64 implementado via prompt)
             triggerAdmin() {
-                const doc = prompt("Ativação Offline - Digite CPF/CNPJ (Apenas Números):");
-                if(!doc) return;
-                const key = prompt("Digite a Chave Fornecida pelo Sistema:");
-                if(key !== btoa(doc).substring(0,8).toUpperCase()) return UI.toast("Chave Inválida", "error");
+                const doc = prompt("Ativação - Digite CPF/CNPJ:"); if(!doc) return;
+                const key = prompt("Chave Fornecida:"); if(key !== btoa(doc).substring(0,8).toUpperCase()) return UI.toast("Chave Inválida", "error");
                 DB.put("config", { key: "app_license", dataExpiracao: Date.now() + (365*24*60*60*1000) }).then(()=>location.reload());
             },
 
@@ -514,137 +455,129 @@ clearTimeout(timeoutId);
                 UI.openModal(h);
             },
 
-            // FASE 3 e 4: VALIDAÇÃO E PROTEÇÃO NOS CRUDS
             async saveCliente() { 
-                if (window._savingCliente) return;
-                const n = document.getElementById('f-nome').value.trim();
-                const d = document.getElementById('f-doc').value.trim();
-                if (!n || !d) return UI.toast("Nome e Documento obrigatórios", "error"); // Validação
-                
-                window._savingCliente = true; // Lock
-                try {
-                    await DB.put("clientes", syncMetadata({ nome: n, cpfCnpj: d, status: 'ativo' })); 
-                    UI.closeModal(); await Service.loadAllState(); UI.nav('clientes'); Service.syncData();
-                } catch(e) { UI.toast("Erro", "error"); } finally { window._savingCliente = false; }
+                if (window._savingCliente) return; const n = document.getElementById('f-nome').value.trim(); const d = document.getElementById('f-doc').value.trim();
+                if (!n || !d) return UI.toast("Nome e Documento obrigatórios", "error");
+                window._savingCliente = true; 
+                try { await DB.put("clientes", syncMetadata({ nome: n, cpfCnpj: d, status: 'ativo' })); UI.closeModal(); await Service.loadAllState(); UI.nav('clientes'); Service.syncData(); } catch(e) { UI.toast("Erro", "error"); } finally { window._savingCliente = false; }
             },
             async saveProd() { 
-                if (window._savingProd) return;
-                const n = document.getElementById('f-nome').value.trim();
-                const c = document.getElementById('f-cod').value.trim();
-                const e = parseInt(document.getElementById('f-estoque').value);
-                const p = parseFloat(document.getElementById('f-preco').value);
-                
-                if (!n || isNaN(e) || e < 0 || isNaN(p) || p < 0) return UI.toast("Dados de produto inválidos", "error"); // Validação
-                
-                window._savingProd = true; // Lock
-                try {
-                    await DB.put("produtos", syncMetadata({ nome: n, codigo: c, estoqueAtual: e, precoVenda: p, estoqueMinimo: 5 })); 
-                    UI.closeModal(); await Service.loadAllState(); UI.nav('produtos'); Service.syncData();
-                } catch(err) { UI.toast("Erro", "error"); } finally { window._savingProd = false; }
+                if (window._savingProd) return; const n = document.getElementById('f-nome').value.trim(); const c = document.getElementById('f-cod').value.trim();
+                const e = parseInt(document.getElementById('f-estoque').value); const p = parseFloat(document.getElementById('f-preco').value);
+                if (!n || isNaN(e) || e < 0 || isNaN(p) || p < 0) return UI.toast("Dados inválidos", "error");
+                window._savingProd = true; 
+                try { await DB.put("produtos", syncMetadata({ nome: n, codigo: c, estoqueAtual: e, precoVenda: p, estoqueMinimo: 5 })); UI.closeModal(); await Service.loadAllState(); UI.nav('produtos'); Service.syncData(); } catch(err) { UI.toast("Erro", "error"); } finally { window._savingProd = false; }
             },
 
-            // FASE 13 e 14: FUNÇÕES DO CAIXA
-            async abrirCaixa() {
-                const v = parseFloat(document.getElementById('cx-valor').value||0);
-                const o = document.getElementById('cx-op').value;
-                await DB.put("caixa", syncMetadata({ dataAbertura: Date.now(), valorInicial: v, operador: o, dataFechamento: null }));
-                UI.toast("Caixa Aberto!"); await Service.loadAllState(); UI.nav('caixa');
-            },
-            async fecharCaixa(id) {
-                if(!confirm("Deseja fechar o caixa?")) return;
-                const c = await DB.get("caixa", id);
-                c.dataFechamento = Date.now();
-                await DB.put("caixa", syncMetadata(c));
-                UI.toast("Caixa Fechado!"); await Service.loadAllState(); UI.nav('caixa');
-            },
-            caixaMovimento(tipo) {
-                const val = prompt(`Digite o valor para ${tipo}:`);
-                if(!val || isNaN(val)) return;
-                DB.put("transacoes", syncMetadata({ tipo: tipo==='suprimento'?'entrada':'saida', origem: 'Caixa', descricao: tipo.toUpperCase(), valor: parseFloat(val), data: Date.now() })).then(()=>{
-                    UI.toast("Movimento registrado!"); Service.loadAllState();
-                });
+            // CIRURGIA: Ler e Importar XML (NFe)
+            async importarXML(e) {
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    try {
+                        const xmlDoc = new DOMParser().parseFromString(event.target.result, "text/xml");
+                        const dets = xmlDoc.getElementsByTagName("det");
+                        if (dets.length === 0) throw "Nenhum produto (tag <det>) encontrado no XML.";
+
+                        let count = 0;
+                        for (let i = 0; i < dets.length; i++) {
+                            const prod = dets[i].getElementsByTagName("prod")[0];
+                            if (prod) {
+                                const cProd = prod.getElementsByTagName("cProd")[0]?.textContent || "";
+                                const xProd = prod.getElementsByTagName("xProd")[0]?.textContent || "";
+                                const qCom = parseFloat(prod.getElementsByTagName("qCom")[0]?.textContent || "0");
+                                const vUnCom = parseFloat(prod.getElementsByTagName("vUnCom")[0]?.textContent || "0");
+                                
+                                // Aplica 100% de margem (multiplica o custo por 2)
+                                await DB.put("produtos", syncMetadata({ nome: xProd, codigo: cProd, estoqueAtual: Math.floor(qCom), precoCusto: vUnCom, precoVenda: vUnCom * 2, estoqueMinimo: 5 }));
+                                count++;
+                            }
+                        }
+                        UI.toast(`${count} produtos importados! Revise os preços.`, "success");
+                        await Service.loadAllState(); UI.nav('produtos'); Service.syncData();
+                    } catch (err) { UI.toast("Erro ao ler XML da NFe.", "error"); console.error(err); } finally { e.target.value = ""; }
+                };
+                reader.readAsText(file);
             },
 
-            // FASE 11 e 12: FUNÇÕES DO PDV
+            async abrirCaixa() { const v = parseFloat(document.getElementById('cx-valor').value||0); const o = document.getElementById('cx-op').value; await DB.put("caixa", syncMetadata({ dataAbertura: Date.now(), valorInicial: v, operador: o, dataFechamento: null })); UI.toast("Caixa Aberto!"); await Service.loadAllState(); UI.nav('caixa'); },
+            async fecharCaixa(id) { if(!confirm("Fechar caixa?")) return; const c = await DB.get("caixa", id); c.dataFechamento = Date.now(); await DB.put("caixa", syncMetadata(c)); UI.toast("Caixa Fechado!"); await Service.loadAllState(); UI.nav('caixa'); },
+            caixaMovimento(tipo) { const val = prompt(`Valor para ${tipo}:`); if(!val || isNaN(val)) return; DB.put("transacoes", syncMetadata({ tipo: tipo==='suprimento'?'entrada':'saida', origem: 'Caixa', descricao: tipo.toUpperCase(), valor: parseFloat(val), data: Date.now(), status: 'pago' })).then(()=>{ UI.toast("Movimento registrado!"); Service.loadAllState(); }); },
+
+            // CIRURGIA: Função para dar Baixa no Fiado (Contas a Receber)
+            async receberFiado(id) {
+                if(!confirm("Confirmar recebimento deste valor?")) return;
+                const t = await DB.get("transacoes", id);
+                t.status = 'pago'; t.dataRecebimento = Date.now(); t.sync_status = 0; t.updated_at = new Date().toISOString();
+                await DB.put("transacoes", t);
+                UI.toast("Valor recebido com sucesso!"); await Service.loadAllState(); UI.nav('financeiro'); Service.syncData();
+            },
+
             renderPDV() {
-                const list = document.getElementById('pdv-cart-list');
-                if(!list) return; // Segurança
-                
+                const list = document.getElementById('pdv-cart-list'); if(!list) return;
                 let sub = 0;
-                list.innerHTML = State.pdvCart.map((item, idx) => {
-                    sub += item.precoVenda * item.qtd;
-                    return `<tr><td class="p-2 font-bold">${item.nome}</td><td class="p-2">${item.qtd}</td><td class="p-2">${item.precoVenda.toFixed(2)}</td><td class="p-2 font-bold">R$ ${(item.precoVenda*item.qtd).toFixed(2)}</td><td class="p-2 text-right"><button onclick="Actions.pdvRemove(${idx})" class="text-red-500 font-bold">X</button></td></tr>`;
-                }).join('');
-
+                list.innerHTML = State.pdvCart.map((item, idx) => { sub += item.precoVenda * item.qtd; return `<tr><td class="p-2 font-bold">${item.nome}</td><td class="p-2">${item.qtd}</td><td class="p-2">${item.precoVenda.toFixed(2)}</td><td class="p-2 font-bold">R$ ${(item.precoVenda*item.qtd).toFixed(2)}</td><td class="p-2 text-right"><button onclick="Actions.pdvRemove(${idx})" class="text-red-500 font-bold">X</button></td></tr>`; }).join('');
                 document.getElementById('pdv-subtotal').innerText = `R$ ${sub.toFixed(2)}`;
                 const desc = parseFloat(document.getElementById('pdv-desc').value || 0);
                 document.getElementById('pdv-total').innerText = `R$ ${(sub - desc).toFixed(2)}`;
             },
             pdvSearch(e) {
-                if (e.key !== 'Enter') return;
-                const term = e.target.value.trim().toLowerCase();
-                if (!term) return;
-                
-                // Busca por nome ou código
+                if (e.key !== 'Enter') return; const term = e.target.value.trim().toLowerCase(); if (!term) return;
                 const prod = State.produtos.find(p => p.nome.toLowerCase() === term || p.codigo === term || p.id.toString() === term);
                 if (prod) {
                     if (prod.estoqueAtual <= 0) return UI.toast("Estoque insuficiente", "error");
                     const existing = State.pdvCart.find(i => i.id === prod.id);
-                    if (existing) existing.qtd += 1;
-                    else State.pdvCart.push({ ...prod, qtd: 1 });
-                    
-                    e.target.value = ''; // limpa input
-                    this.renderPDV();
-                } else {
-                    UI.toast("Produto não encontrado", "error");
-                }
+                    if (existing) existing.qtd += 1; else State.pdvCart.push({ ...prod, qtd: 1 });
+                    e.target.value = ''; this.renderPDV();
+                } else UI.toast("Produto não encontrado", "error");
             },
             pdvRemove(idx) { State.pdvCart.splice(idx, 1); this.renderPDV(); },
             
+            // CIRURGIA: Crediário acoplado na Finalização do PDV
             async pdvFinalize() {
                 if (State.pdvCart.length === 0) return UI.toast("Carrinho vazio!", "error");
                 if (window._savingPDV) return; window._savingPDV = true;
 
                 try {
-                    // Verifica Caixa (Opcional, mas seguro)
                     const lastCx = State.caixa.length > 0 ? State.caixa[State.caixa.length - 1] : null;
                     if(!lastCx || lastCx.dataFechamento) throw "Caixa fechado. Abra o caixa primeiro.";
 
+                    const pg = document.getElementById('pdv-pag').value;
+                    const clientId = document.getElementById('pdv-client').value;
+                    if (pg === 'crediario' && !clientId) throw "Selecione um Cliente para vender no Crediário (Fiado)!";
+
+                    const clientName = clientId ? State.clientes.find(c => c.id == clientId)?.nome : 'Consumidor';
+
                     const tx = DB.handle.transaction(["produtos", "transacoes"], "readwrite");
-                    
                     let sub = 0;
-                    // Baixa estoque
                     for (const item of State.pdvCart) {
                         sub += item.precoVenda * item.qtd;
                         const p = await new Promise(r => tx.objectStore("produtos").get(item.id).onsuccess = e => r(e.target.result));
                         if(p.estoqueAtual < item.qtd) throw `Estoque falhou: ${p.nome}`;
-                        p.estoqueAtual -= item.qtd;
-                        tx.objectStore("produtos").put(p);
+                        p.estoqueAtual -= item.qtd; tx.objectStore("produtos").put(p);
                     }
 
                     const desc = parseFloat(document.getElementById('pdv-desc').value || 0);
-                    const pg = document.getElementById('pdv-pag').value;
                     const total = sub - desc;
 
-                    // Financeiro
-                    tx.objectStore("transacoes").add(syncMetadata({ tipo: 'entrada', origem: 'PDV', descricao: `Venda PDV (${pg})`, valor: total, data: Date.now() }));
+                    tx.objectStore("transacoes").add(syncMetadata({ 
+                        tipo: 'entrada', origem: 'PDV', 
+                        descricao: `Venda PDV (${pg.toUpperCase()}) - ${clientName}`, 
+                        valor: total, data: Date.now(), 
+                        status: pg === 'crediario' ? 'pendente' : 'pago',
+                        clienteId: clientId || null
+                    }));
 
                     await new Promise((r, j) => { tx.oncomplete = () => r(true); tx.onerror = () => j("Erro BD PDV"); });
 
-                    // FASE 12: Impressão Térmica Dinâmica 40 colunas
                     const pad = (s, l) => s.toString().substring(0, l).padEnd(l, ' ');
-                    let receipt = `            UMX GESTAO v4.0             \n           CUPOM NAO FISCAL             \n----------------------------------------\nDATA: ${new Date().toLocaleString()}\n----------------------------------------\nITEM             QTD       VALOR (RS)   \n`;
+                    let receipt = `            UMX GESTAO v4.1             \n           CUPOM NAO FISCAL             \n----------------------------------------\nCLIENTE: ${clientName}\nDATA: ${new Date().toLocaleString()}\nPAGAMENTO: ${pg.toUpperCase()}\n----------------------------------------\nITEM             QTD       VALOR (RS)   \n`;
                     State.pdvCart.forEach(i => { receipt += `${pad(i.nome, 16)} ${pad(i.qtd, 4)} ${pad(i.precoVenda.toFixed(2), 12)}\n`; });
                     receipt += `----------------------------------------\nSUBTOTAL:                         ${sub.toFixed(2)}\nDESCONTO:                         ${desc.toFixed(2)}\nTOTAL:                            ${total.toFixed(2)}\n----------------------------------------\n      OBRIGADO PELA PREFERENCIA!        \n\n\n`;
-                    document.getElementById('print-area').innerHTML = `<pre>${receipt}</pre>`;
-                    window.print();
+                    document.getElementById('print-area').innerHTML = `<pre>${receipt}</pre>`; window.print();
 
-                    State.pdvCart = []; // Limpa
-                    document.getElementById('pdv-desc').value = 0;
-                    UI.toast("Venda finalizada com sucesso!");
-                    await Service.loadAllState();
-                    this.renderPDV();
-                    Service.syncData();
+                    State.pdvCart = []; document.getElementById('pdv-desc').value = 0; document.getElementById('pdv-client').value = "";
+                    UI.toast("Venda finalizada com sucesso!"); await Service.loadAllState(); this.renderPDV(); Service.syncData();
                 } catch(e) { UI.toast(e, "error"); } finally { window._savingPDV = false; }
             }
         };
